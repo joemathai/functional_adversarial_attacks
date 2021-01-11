@@ -20,7 +20,7 @@ class ThinPlateSplines(torch.nn.Module):
         sqrB = torch.sum(torch.pow(B, 2), dim=2, keepdim=True).expand(B.shape[0], B.shape[1], A.shape[1]).permute(0, 2, 1)
         return torch.clamp(sqrA - 2 * torch.bmm(A, B.permute(0, 2, 1)) + sqrB, min=0)
 
-    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=7):
+    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=100):
         """
         formulation of TPS
         x' = a0 + a1x +a2y + Σ f_i * U(||(xi,yi)-(x,y)||)
@@ -28,8 +28,10 @@ class ThinPlateSplines(torch.nn.Module):
         where U(r) = r**2 ln(r**2)
 
         :param batch_shape: shape of the mini-batch N,C,H,W
-        :param src_pts: shape batch_size x num_points x 2 (source control points) range [-1, 1]
-        :param num_random_pts: if src_pts is None then pick random num_random_pts from the grid as src pts
+        :param src_pts: shape batch_size x num_points x 2 (control points) range [-1, 1]
+        :param grid_scale_factor: sample a grid of control points on the image
+        :param num_random_pts: if src_pts is None and grid_scale_factor is None,
+                               then pick num_random_pts as control points
         """
         super().__init__()
         batch_size, c, h, w = batch_shape
@@ -40,10 +42,17 @@ class ThinPlateSplines(torch.nn.Module):
 
         # if src_pts are not provided sample a uniform grid of points for perturbation
         if src_pts is None:
-            src_pts = torch.nn.functional.affine_grid(theta=torch.eye(2, 3).repeat(batch_size, 1, 1),
-                                                      size=(
-                                                      batch_size, c, h // grid_scale_factor, w // grid_scale_factor),
-                                                      align_corners=False).view(batch_size, -1, 2)  # N, H*W, 2
+            if grid_scale_factor is not None:
+                src_pts = torch.nn.functional.affine_grid(theta=torch.eye(2, 3).repeat(batch_size, 1, 1),
+                                                          size=(
+                                                          batch_size, c, h // grid_scale_factor, w // grid_scale_factor),
+                                                          align_corners=False).view(batch_size, -1, 2)  # N, H*W, 2
+            else:
+                src_pts = torch.empty(batch_size, num_random_pts, 2, requires_grad=False, dtype=torch.float32)
+                for idx in range(batch_size):
+                    src_pts[idx, :, :].copy_(self.grid.view(batch_size, -1, 2)[idx,
+                                             torch.randperm(self.grid.shape[1] * self.grid.shape[2])[:num_random_pts],
+                                             :])
 
         _, num_src_pts, _ = src_pts.shape
         self.register_buffer("src_pts", src_pts, persistent=False)
