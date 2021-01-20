@@ -22,8 +22,8 @@ def validation(classifier, x, x_adv, y):
     y = y.cpu().numpy()
     attack_successful = [y[i] != y_pred[i] for i in range(x.shape[0])]
     linf_metric = torch.norm(x.view(x.shape[0], -1) - x_adv.view(x.shape[0], -1), p=float('inf'), dim=1).cpu().numpy()
-    logger.info(f"pgd_attack_with_perturbation state: (success, gt, linf) : "
-                f"{list(zip(list(range(y.shape[0])), attack_successful, y, linf_metric))}")
+    logger.debug(f"pgd_attack_with_perturbation state: (success, gt, linf) : "
+                 f"{list(zip(list(range(y.shape[0])), attack_successful, y, linf_metric))}")
     return (100 * sum(attack_successful) / x.shape[0]).item()
 
 
@@ -37,8 +37,9 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
     :param classifier: Classifier network to attack
     :param examples: N x C x H X W batch
     :param labels: ground truth of the batch N x 1
-    :param linf_budget: the epsilon threat model for the attack
+    :param linf_budget: budget for Lp attack and ColorTransforms attack
     :param pixel_shift_budget: the maximum shift each pixel can take in x and y axis
+                               note: for Thin Plate Splines this is applied to control points only
     :param num_iterations: max num of iterations to run the PGD based iterative attack
     :param perturbation_step_size: Step size by which to modify the parameters
     :param keep_best: save and return the perturbed images with the least loss
@@ -50,14 +51,10 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
     :param l2_smooth_loss_weight: weight for the l2_smooth_loss
     :return:
     """
-    original_examples = examples.clone().detach()  # make a copy of the original image for linf constraints
-    original_examples.requires_grad = False
     num_examples = examples.shape[0]
-
     best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
                                           device=examples.device, requires_grad=False)
     best_loss_per_example = [float('inf') for _ in range(num_examples)]
-
     loss_fn = CWLossF6(classifier)
 
     # add a noise pattern to the identity of the recolor module
@@ -75,17 +72,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
     for iter_no in range(num_iterations):
         # unravel the sequential model and separate out linf from deformation methods
         # apply linf based perturbations and clip the combined perturbations
-        perturbed_examples = examples
-        for module in perturbation.modules():
-            if type(module) in (ColorTransforms, Delta):
-                perturbed_examples = module.forward(perturbed_examples)
-        perturbed_examples = original_examples + \
-                             torch.clamp(perturbed_examples - original_examples, min=-linf_budget, max=linf_budget)
-
-        # apply deformation based perturbations (no clipping metric is used)
-        for module in perturbation.modules():
-            if type(module) in (SpatialFlowFields, ThinPlateSplines, AffineTransforms):
-                perturbed_examples = module.forward(perturbed_examples)
+        perturbed_examples = perturbation(examples)
 
         # total loss
         total_loss_per_example = torch.zeros(size=(examples.shape[0],), requires_grad=True, device=examples.device)
@@ -201,7 +188,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
 
         # If validation is provided do early stopping
         if validator is not None:
-            validation = validator(classifier, original_examples, best_perturbed_examples, labels)
+            validation = validator(classifier, examples, best_perturbed_examples, labels)
             logger.info("iter: %d validation: %.3f", iter_no, validation)
 
     # clean up the accumulated gradients
