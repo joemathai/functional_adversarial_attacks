@@ -27,9 +27,9 @@ def validation(classifier, x, x_adv, y):
     return (100 * sum(attack_successful) / x.shape[0]).item()
 
 
-def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 255.0,
+def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/255.0,) * 3,
                     pixel_shift_budget=2.0, num_iterations=20, perturbation_step_size=1.0 / 255.0,
-                    keep_best=True, random_init=False, validator=validation, l2_smoothing_loss=False,
+                    keep_best=True, validator=validation, l2_smoothing_loss=False,
                     l2_smooth_loss_weight=1e-4):
     """
     A method to combine global and local adversarial attacks
@@ -43,7 +43,6 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
     :param num_iterations: max num of iterations to run the PGD based iterative attack
     :param perturbation_step_size: Step size by which to modify the parameters
     :param keep_best: save and return the perturbed images with the least loss
-    :param random_init: initialize the transform parameters of the perturbation network with noise sample from the given linf_budget
     :param validator: A method that takes arguments (classifier, x, x_adv, y)
                       and return a value from [0.0, 100.0] indicating the success rate of the attack
     :param l2_smoothing_loss: If true applies the lsmooth loss from the paper https://arxiv.org/pdf/1801.02612.pdf
@@ -56,17 +55,6 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
                                           device=examples.device, requires_grad=False)
     best_loss_per_example = [float('inf') for _ in range(num_examples)]
     loss_fn = CWLossF6(classifier)
-
-    # add a noise pattern to the identity of the recolor module
-    if random_init:
-        logger.info('random_init: adding noise to the xform params')
-        with torch.no_grad():
-            for module in perturbation.modules():
-                if type(module) == (ColorTransforms, Delta):
-                    for param in module.parameters():
-                        param.copy_(torch.clamp(
-                            param.data + torch.from_numpy(np.random.uniform(-linf_budget, linf_budget, param.shape)).to(
-                                device=param.device, dtype=torch.float32), min=0.0, max=1.0))
 
     perturbed_examples = None
     for iter_no in range(num_iterations):
@@ -117,14 +105,28 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=8 / 
 
             # clip the parameters to be withing the linf budget of the image
             for module in perturbation.modules():
-                if type(module) in (ColorTransforms, Delta):
+
+                if type(module) in (Delta,):
                     # clip the parameters to be within pixel intensities [0, 1]
                     img_bound_clip_params = torch.clamp(module.xform_params, min=0.0, max=1.0)
                     module.xform_params.copy_(img_bound_clip_params)
                     # based on linf budget clip the parameters
-                    linf_clip_params = torch.clamp(module.xform_params - module.identity_params,
-                                                   min=-linf_budget, max=linf_budget) + module.identity_params
-                    module.xform_params.copy_(linf_clip_params)
+                    for ch in range(3):
+                        linf_clip_params = torch.clamp(
+                            module.xform_params[:, ch, :, :] - module.identity_params[:, ch, :, :],
+                            min=-linf_budget[ch], max=linf_budget[ch]) + module.identity_params[:, ch, :, :]
+                        module.xform_params[:, ch, :, :].copy_(linf_clip_params)
+
+                if type(module) in (ColorTransforms,):
+                    # clip the parameters to be within pixel intensities [0, 1]
+                    img_bound_clip_params = torch.clamp(module.xform_params, min=0.0, max=1.0)
+                    module.xform_params.copy_(img_bound_clip_params)
+                    # based on linf budget clip the parameters
+                    for ch in range(3):
+                        linf_clip_params = torch.clamp(
+                            module.xform_params[:, :, :, :, ch] - module.identity_params[:, :, :, :, ch],
+                            min=-linf_budget[ch], max=linf_budget[ch]) + module.identity_params[:, :, :, :, ch]
+                        module.xform_params[:, :, :, :, ch].copy_(linf_clip_params)
 
                 if type(module) in (SpatialFlowFields,):
                     # standard linf measure is not applicable here
