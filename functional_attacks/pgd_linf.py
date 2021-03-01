@@ -2,7 +2,8 @@ import torch
 import numpy as np
 import logging
 
-from functional_attacks.attacks import AffineTransforms, ColorTransforms, Delta, SpatialFlowFields, ThinPlateSplines
+from functional_attacks.attacks import AffineTransforms, ColorTransforms, Delta, \
+    SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel
 from functional_attacks.loss import CWLossF6, l2_grid_smoothness
 
 logger = logging.getLogger(__name__)
@@ -18,11 +19,12 @@ def validation(classifier, x, x_adv, y):
     :param y: ground truth values for the original images
     :return: success-rate of the attack
     """
-    y_pred = np.rint(np.squeeze(torch.nn.functional.softmax(classifier(x_adv), dim=1).cpu().data.numpy()[:, 1]))
+    y_pred = classifier(x_adv).topk(1)[1].cpu().numpy()
     y = y.cpu().numpy()
     attack_successful = [y[i] != y_pred[i] for i in range(x.shape[0])]
     linf_metric = torch.norm(x.view(x.shape[0], -1) - x_adv.view(x.shape[0], -1), p=float('inf'), dim=1).cpu().numpy()
-    logger.debug(f"pgd_attack_with_perturbation state: (success, gt, linf) : "
+    logger.debug(f"linf: {linf_metric}")
+    logger.debug(f"pgd_attack_with_perturbation state: (idx, success, gt, linf) : "
                  f"{list(zip(list(range(y.shape[0])), attack_successful, y, linf_metric))}")
     return (100 * sum(attack_successful) / x.shape[0]).item()
 
@@ -52,9 +54,13 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
     """
     num_examples = examples.shape[0]
     best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
-                                          device=examples.device, requires_grad=False)
+                                          device=examples.device, requires_grad=False).copy_(examples)
     best_loss_per_example = [float('inf') for _ in range(num_examples)]
     loss_fn = CWLossF6(classifier)
+
+    if validator is not None:
+        validation = validator(classifier, examples, best_perturbed_examples, labels)
+        logger.info("iter: %d attack-success-rate: %.3f", 0, validation)
 
     perturbed_examples = None
     for iter_no in range(num_iterations):
@@ -68,7 +74,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
         # apply CW Linf loss without constraint to minimize the linf budget
         cw_f6_loss_per_example = loss_fn(perturbed_examples, labels)
         total_loss_per_example = total_loss_per_example + cw_f6_loss_per_example
-        logger.debug("cw_f6 iter:%d loss: %.3f", iter_no, cw_f6_loss_per_example.sum().item())
+        logger.info("cw_f6 iter:%d loss: %.3f", iter_no, cw_f6_loss_per_example.sum().item())
 
         # smoothness loss for params of ReColor and SpatialFlowField
         if l2_smoothing_loss:
@@ -77,7 +83,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
                     smooth_loss_per_example = l2_grid_smoothness(
                         module.xform_params - module.identity_params) * l2_smooth_loss_weight
                     total_loss_per_example = total_loss_per_example + smooth_loss_per_example
-                    logger.debug("[%s] smooth loss iter:%d loss: %.3f", type(module).__name__, iter_no,
+                    logger.info("[%s] smooth loss iter:%d loss: %.3f", type(module).__name__, iter_no,
                                  smooth_loss_per_example.sum().item())
 
         # clear the gradients of the perturbation model using the optimizer
@@ -87,21 +93,24 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
 
         # backpropagate the loss
         total_loss_per_example.sum().backward()
-        logger.debug("total loss iter: %d, loss: %.3f", iter_no, total_loss_per_example.sum().item())
+        logger.info("total loss iter: %d, loss: %.3f", iter_no, total_loss_per_example.sum().item())
 
         with torch.no_grad():
             # update the weights of the perturbation network
             for module in perturbation.modules():
                 # non-signed update
-                if type(module) in (SpatialFlowFields, ColorTransforms, ThinPlateSplines, AffineTransforms):
+                if type(module) in (torch.nn.Sequential,):
+                    continue
+                elif type(module) in (SpatialFlowFields, ColorTransforms,
+                                      ThinPlateSplines, AffineTransforms, ConvolutionalKernel):
                     for param in module.parameters():
                         param.sub_(param.grad * perturbation_step_size)
                 # signed update
-                elif type(module) != torch.nn.Sequential:
+                elif type(module) in (Delta,):
                     for param in module.parameters():
                         param.sub_(torch.sign(param.grad) * perturbation_step_size)
                 else:
-                    continue
+                    raise RuntimeError(f'{module} update function not defined')
 
             # clip the parameters to be withing the linf budget of the image
             for module in perturbation.modules():
@@ -180,6 +189,13 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
                         torch.cat([clip_sx, clip_sy], dim=1) * torch.cat([torch.sin(clip_angle), torch.cos(clip_angle)], dim=1))
                     module.xform_params[:, :, -1].copy_(torch.cat([clip_tx, clip_ty], dim=1))
 
+                if type(module) in (ConvolutionalKernel,):
+                    weights = module.xform_params
+                    batch_size, output_channels, input_channels, kx, ky = weights.shape
+                    # ?? make sure L1 of the kernel adds to 1.0 (preserve the intensity of image) ??
+                    weights = weights.view(batch_size, output_channels, -1) / torch.norm(weights.view(batch_size, output_channels, -1), p=1, dim=2, keepdim=True)
+                    module.xform_params.copy_(weights.view(batch_size, output_channels, input_channels, kx, ky))
+
         # bookkeeping to track the best perturbed examples
         if keep_best:
             for i, el in enumerate(total_loss_per_example):
@@ -191,7 +207,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
         # If validation is provided do early stopping
         if validator is not None:
             validation = validator(classifier, examples, best_perturbed_examples, labels)
-            logger.info("iter: %d validation: %.3f", iter_no, validation)
+            logger.info("iter: %d attack-success-rate: %.3f", iter_no + 1, validation)
 
     # clean up the accumulated gradients
     classifier.zero_grad()
