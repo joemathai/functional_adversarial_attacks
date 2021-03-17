@@ -20,7 +20,8 @@ class ThinPlateSplines(torch.nn.Module):
         sqrB = torch.sum(torch.pow(B, 2), dim=2, keepdim=True).expand(B.shape[0], B.shape[1], A.shape[1]).permute(0, 2, 1)
         return torch.clamp(sqrA - 2 * torch.bmm(A, B.permute(0, 2, 1)) + sqrB, min=0)
 
-    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=100):
+    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=100, step_size=0.005,
+                 pixel_shift_budget=1.5):
         """
         formulation of TPS
         x' = a0 + a1x +a2y + Σ f_i * U(||(xi,yi)-(x,y)||)
@@ -36,6 +37,10 @@ class ThinPlateSplines(torch.nn.Module):
         super().__init__()
         batch_size, c, h, w = batch_shape
         self.batch_shape = batch_shape
+        self.step_size = step_size
+        _, _, h, w = self.batch_shape
+        self.h_per_pixel_shift = (2.0 / h) * pixel_shift_budget
+        self.w_per_pixel_shift = (2.0 / w) * pixel_shift_budget
         self.grid = torch.nn.functional.affine_grid(theta=torch.eye(2, 3).repeat(batch_size, 1, 1),
                                                     size=(batch_size, c, h, w),
                                                     align_corners=False)  # N, H, W, 2
@@ -93,5 +98,18 @@ class ThinPlateSplines(torch.nn.Module):
         grid_y = torch.sum(self.grid_pts * B.unsqueeze(dim=1).expand(B.shape[0], self.grid_pts.shape[1], B.shape[1]), dim=2) \
                  + torch.sum(G.unsqueeze(dim=1).expand(G.shape[0], self.grid_pts.shape[1], G.shape[1]) * self.grid_pts_u, dim=2)
         modified_grid = torch.cat([grid_x.unsqueeze(dim=2), grid_y.unsqueeze(dim=2)], dim=2).view(n, h, w, 2)
-        modified_img = torch.nn.functional.grid_sample(input=imgs, grid=modified_grid, mode='bilinear', align_corners=False)
-        return modified_img
+        return torch.nn.functional.grid_sample(input=imgs, grid=modified_grid,
+                                               mode='bicubic', align_corners=False).clamp(min=0.0, max=1.0)
+
+    @torch.no_grad()
+    def update_and_project_params(self):
+        # update the parameters
+        self.xform_params.sub_(torch.sign(self.xform_params.grad) * self.step_size)
+        # project to the bounds
+        x_shift_clip_params = torch.clamp(self.xform_params[:, :, 0] - self.identity_params[:, :, 0],
+                                          min=-self.w_per_pixel_shift, max=self.w_per_pixel_shift).unsqueeze(dim=2)
+        y_shift_clip_params = torch.clamp(self.xform_params[:, :, 1] - self.identity_params[:, :, 1],
+                                          min=-self.h_per_pixel_shift, max=self.h_per_pixel_shift).unsqueeze(dim=2)
+        shift_clip_params = self.identity_params + torch.cat([x_shift_clip_params, y_shift_clip_params], dim=2)
+        self.xform_params.copy_(shift_clip_params.clamp(min=-1.0, max=1.0))
+

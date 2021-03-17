@@ -9,13 +9,13 @@ class ColorTransforms(torch.nn.Module):
     f-smooth proposed in the paper is not yet implemented
     """
 
-    def __init__(self, batch_size, resolution_x, resolution_y, resolution_z, linf_budget=8 / 255.0):
+    def __init__(self, batch_size, resolution_x, resolution_y, resolution_z, step_size=0.003, linf_budget=0.03):
         super().__init__()
         self.resolution_x = resolution_x
         self.resolution_y = resolution_y
         self.resolution_z = resolution_z
+        self.step_size = step_size
         self.linf_budget = linf_budget
-
         # construct identity parameters
         self.register_buffer('identity_params',
                              torch.empty(batch_size, resolution_x, resolution_y, resolution_z, 3, dtype=torch.float32),
@@ -26,8 +26,8 @@ class ColorTransforms(torch.nn.Module):
                     self.identity_params[:, x, y, z, 0] = x / (resolution_x - 1)
                     self.identity_params[:, x, y, z, 1] = y / (resolution_y - 1)
                     self.identity_params[:, x, y, z, 2] = z / (resolution_z - 1)
-
         self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params))
+        print(self.xform_params[0])
 
     def forward(self, imgs):
         N, C, H, W = imgs.shape
@@ -74,3 +74,15 @@ class ColorTransforms(torch.nn.Module):
 
         result = endpoint_values[0] * (1 - float_part[..., 0, None]) + endpoint_values[1] * float_part[..., 0, None]
         return result.permute(0, 3, 1, 2)
+
+    @torch.no_grad()
+    def update_and_project_params(self):
+        # update params
+        self.xform_params.sub_(torch.sign(self.xform_params.grad) * self.step_size)
+        # clip the parameters to be within pixel intensities [0, 1]
+        self.xform_params.copy_(torch.clamp(self.xform_params, min=0.0, max=1.0))
+        # based on linf budget clip the parameters and project
+        self.xform_params.copy_(
+            (self.xform_params - self.identity_params).clamp(min=-self.linf_budget, max=self.linf_budget) +
+            self.identity_params
+        )

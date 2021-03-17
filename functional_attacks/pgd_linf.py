@@ -1,9 +1,9 @@
 import torch
-import numpy as np
 import logging
 
 from functional_attacks.attacks import AffineTransforms, ColorTransforms, Delta, \
-    SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel
+    SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel, AdjustBrightnessContrast, \
+    AdjustGamma, AdjustHueSaturation, AdjustSharpness, GaussianBlur
 from functional_attacks.loss import CWLossF6, l2_grid_smoothness
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ def validation(classifier, x, x_adv, y):
 def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/255.0,) * 3,
                     pixel_shift_budget=2.0, num_iterations=20, perturbation_step_size=1.0 / 255.0,
                     keep_best=True, validator=validation, l2_smoothing_loss=False,
-                    l2_smooth_loss_weight=1e-4):
+                    l2_smooth_loss_weight=1e-4, early_stopping=True):
     """
     A method to combine global and local adversarial attacks
     :param perturbation: nn.sequential model of all the transforms to be applied
@@ -63,6 +63,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
         logger.info("iter: %d attack-success-rate: %.3f", 0, validation)
 
     perturbed_examples = None
+    previous_loss = torch.tensor(0.0)
     for iter_no in range(num_iterations):
         # unravel the sequential model and separate out linf from deformation methods
         # apply linf based perturbations and clip the combined perturbations
@@ -98,103 +99,14 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
         with torch.no_grad():
             # update the weights of the perturbation network
             for module in perturbation.modules():
-                # non-signed update
                 if type(module) in (torch.nn.Sequential,):
                     continue
-                elif type(module) in (SpatialFlowFields, ColorTransforms,
-                                      ThinPlateSplines, AffineTransforms, ConvolutionalKernel):
-                    for param in module.parameters():
-                        param.sub_(param.grad * perturbation_step_size)
-                # signed update
-                elif type(module) in (Delta,):
-                    for param in module.parameters():
-                        param.sub_(torch.sign(param.grad) * perturbation_step_size)
+                elif type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
+                                      GaussianBlur, AffineTransforms, Delta, ColorTransforms, ConvolutionalKernel,
+                                      SpatialFlowFields, ThinPlateSplines):
+                    module.update_and_project_params()
                 else:
                     raise RuntimeError(f'{module} update function not defined')
-
-            # clip the parameters to be withing the linf budget of the image
-            for module in perturbation.modules():
-
-                if type(module) in (Delta,):
-                    # clip the parameters to be within pixel intensities [0, 1]
-                    img_bound_clip_params = torch.clamp(module.xform_params, min=0.0, max=1.0)
-                    module.xform_params.copy_(img_bound_clip_params)
-                    # based on linf budget clip the parameters
-                    for ch in range(3):
-                        linf_clip_params = torch.clamp(
-                            module.xform_params[:, ch, :, :] - module.identity_params[:, ch, :, :],
-                            min=-linf_budget[ch], max=linf_budget[ch]) + module.identity_params[:, ch, :, :]
-                        module.xform_params[:, ch, :, :].copy_(linf_clip_params)
-
-                if type(module) in (ColorTransforms,):
-                    # clip the parameters to be within pixel intensities [0, 1]
-                    img_bound_clip_params = torch.clamp(module.xform_params, min=0.0, max=1.0)
-                    module.xform_params.copy_(img_bound_clip_params)
-                    # based on linf budget clip the parameters
-                    for ch in range(3):
-                        linf_clip_params = torch.clamp(
-                            module.xform_params[:, :, :, :, ch] - module.identity_params[:, :, :, :, ch],
-                            min=-linf_budget[ch], max=linf_budget[ch]) + module.identity_params[:, :, :, :, ch]
-                        module.xform_params[:, :, :, :, ch].copy_(linf_clip_params)
-
-                if type(module) in (SpatialFlowFields,):
-                    # standard linf measure is not applicable here
-                    # we want to clip perturbation to be within a fixed shift for, x and y co-ordinates
-                    h = module.xform_params.shape[1]
-                    w = module.xform_params.shape[2]
-                    h_per_pixel_shift = (2.0 / h) * pixel_shift_budget  # grid generated is from [-1, 1]
-                    w_per_pixel_shift = (2.0 / w) * pixel_shift_budget
-                    # clip parameters to be withing the grid range of [-1, 1]
-                    x_y_bound_clip_params = torch.clamp(module.xform_params, min=-1.0, max=1.0)
-                    module.xform_params.copy_(x_y_bound_clip_params)
-                    # based on co-ordinate shift clip the parameters
-                    x_shift_clip_params = torch.unsqueeze(torch.clamp(
-                        module.xform_params[:, :, :, 0] - module.identity_params[:, :, :, 0], min=-w_per_pixel_shift,
-                        max=w_per_pixel_shift), dim=3)
-                    y_shift_clip_params = torch.unsqueeze(torch.clamp(
-                        module.xform_params[:, :, :, 1] - module.identity_params[:, :, :, 1], min=-h_per_pixel_shift,
-                        max=h_per_pixel_shift), dim=3)
-                    shift_clip_params = module.identity_params + torch.cat([x_shift_clip_params, y_shift_clip_params],
-                                                                           dim=3)
-                    module.xform_params.copy_(shift_clip_params)
-
-                if type(module) in (ThinPlateSplines,):
-                    # clip the params to be within the valid bounds of [-1, 1]
-                    _, _, h, w = module.batch_shape
-                    h_per_pixel_shift = (2.0 / h) * pixel_shift_budget
-                    w_per_pixel_shift = (2.0 / w) * pixel_shift_budget
-                    x_y_bound_clip_params = torch.clamp(module.xform_params, min=-1.0, max=1.0)
-                    module.xform_params.copy_(x_y_bound_clip_params)
-                    x_shift_clip_params = torch.clamp(module.xform_params[:, :, 0] - module.identity_params[:, :, 0],
-                                                      min=-w_per_pixel_shift, max=w_per_pixel_shift).unsqueeze(dim=2)
-                    y_shift_clip_params = torch.clamp(module.xform_params[:, :, 1] - module.identity_params[:, :, 1],
-                                                      min=-h_per_pixel_shift, max=h_per_pixel_shift).unsqueeze(dim=2)
-                    shift_clip_params = module.identity_params + torch.cat([x_shift_clip_params, y_shift_clip_params],
-                                                                           dim=2)
-                    module.xform_params.copy_(shift_clip_params)
-
-                if type(module) in (AffineTransforms,):
-                    angle = torch.atan2(module.xform_params[:, 1, 0], module.xform_params[:, 1, 1])
-                    clip_angle = torch.clamp(angle, min=-np.pi/2, max=np.pi/2).unsqueeze(dim=1)
-                    clip_sx = torch.clamp(module.xform_params[:, 0, 0] / torch.cos(angle), min=0.8, max=1.2).unsqueeze(dim=1)
-                    clip_sy = torch.clamp(module.xform_params[:, 1, 0] / torch.sin(angle), min=0.8, max=1.2).unsqueeze(dim=1)
-                    clip_tx = torch.clamp(module.xform_params[:, 0, -1],
-                                          min=-pixel_shift_budget, max=pixel_shift_budget).unsqueeze(dim=1)
-                    clip_ty = torch.clamp(module.xform_params[:, 1, -1],
-                                          min=-pixel_shift_budget, max=pixel_shift_budget).unsqueeze(dim=1)
-                    module.xform_params[:, 0, :2].copy_(
-                        torch.cat([clip_sx, -1.0 * clip_sy], dim=1) * torch.cat([torch.cos(clip_angle), torch.sin(clip_angle)],
-                                                                                dim=1))
-                    module.xform_params[:, 1, :2].copy_(
-                        torch.cat([clip_sx, clip_sy], dim=1) * torch.cat([torch.sin(clip_angle), torch.cos(clip_angle)], dim=1))
-                    module.xform_params[:, :, -1].copy_(torch.cat([clip_tx, clip_ty], dim=1))
-
-                if type(module) in (ConvolutionalKernel,):
-                    weights = module.xform_params
-                    batch_size, output_channels, input_channels, kx, ky = weights.shape
-                    # ?? make sure L1 of the kernel adds to 1.0 (preserve the intensity of image) ??
-                    weights = weights.view(batch_size, output_channels, -1) / torch.norm(weights.view(batch_size, output_channels, -1), p=1, dim=2, keepdim=True)
-                    module.xform_params.copy_(weights.view(batch_size, output_channels, input_channels, kx, ky))
 
         # bookkeeping to track the best perturbed examples
         if keep_best:
@@ -208,6 +120,13 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
         if validator is not None:
             validation = validator(classifier, examples, best_perturbed_examples, labels)
             logger.info("iter: %d attack-success-rate: %.3f", iter_no + 1, validation)
+
+        # early stopping
+        if early_stopping and torch.allclose(total_loss_per_example.sum(), previous_loss):
+            logger.warning("the loss didn't improve from previous iteration, stopping PGD optimization for the batch")
+            break
+
+        previous_loss = total_loss_per_example.sum()
 
     # clean up the accumulated gradients
     classifier.zero_grad()
