@@ -26,11 +26,10 @@ def _rgb2hsv(img):
     hb = ((maxc != g) & (maxc != r)) * (4.0 + gc - rc)
     h = (hr + hg + hb)
     h = torch.fmod((h / 6.0 + 1.0), 1.0)
-    return torch.stack((h, s, maxc), dim=-3)
+    return h, s, maxc
 
 
-def _hsv2rgb(img):
-    h, s, v = img.unbind(dim=-3)
+def _hsv2rgb(h, s, v):
     i = torch.floor(h * 6.0)
     f = (h * 6.0) - i
     i = i.to(dtype=torch.int32)
@@ -43,38 +42,40 @@ def _hsv2rgb(img):
     a2 = torch.stack((t, v, v, q, p, p), dim=-3)
     a3 = torch.stack((p, p, t, v, v, q), dim=-3)
     a4 = torch.stack((a1, a2, a3), dim=-4)
-    return torch.einsum("...ijk, ...xijk -> ...xjk", mask.to(dtype=img.dtype), a4)
+    return torch.einsum("...ijk, ...xijk -> ...xjk", mask.to(dtype=torch.float32), a4)
 
 
 class AdjustHueSaturation(torch.nn.Module):
-    def __init__(self, batch_size, step_size=0.1, saturation_bounds=(0.2, 2.0), hue_bounds=(-math.pi, math.pi)):
+    def __init__(self, batch_shape, hue_step_size=0.002, sat_step_size=0.04, saturation_bounds=(0.2, 2.0),
+                 hue_bounds=(-0.5, 0.5)):
         super().__init__()
-        self.step_size = step_size
+        self.hue_step_size = hue_step_size
+        self.sat_step_size = sat_step_size
         self.saturation_bounds = saturation_bounds
         self.hue_bounds = hue_bounds
-        saturation_params = torch.ones(batch_size, dtype=torch.float32).unsqueeze_(dim=1)
-        hue_params = torch.zeros(batch_size, dtype=torch.float32).unsqueeze_(dim=1)
+        saturation_params = torch.ones(batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
+        hue_params = torch.zeros(batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
         self.xform_params = torch.nn.Parameter(torch.cat([hue_params, saturation_params], dim=1))
 
     def forward(self, imgs):
         b, c, h, w = imgs.shape
         # unpack the hsv values
-        hue, saturation, value = torch.chunk(_rgb2hsv(imgs), chunks=3, dim=-3)
+        hue, saturation, value = _rgb2hsv(imgs)
         # adjust the hue
-        mod_hue = torch.fmod(hue.view(b, -1) + self.xform_params[:, 0].view(-1, 1), 2 * math.pi).view(b, 1, h, w)
+        mod_hue = ((hue.view(b, -1) + self.xform_params[:, 0].view(-1, 1)) % 1.0).view(b, h, w)
         # adjust the saturation
         mod_saturation = torch.clamp(saturation.view(b, -1) * self.xform_params[:, 1].view(-1, 1),
-                                     min=0, max=1).view(b, 1, h, w)
+                                     min=0, max=1).view(b, h, w)
         # pack back back the corrected hue
-        return _hsv2rgb(torch.cat([mod_hue, mod_saturation, value], dim=-3))
+        return _hsv2rgb(mod_hue, mod_saturation, value)
 
     @torch.no_grad()
     def update_and_project_params(self):
         # update parameters
-        self.xform_params.sub_(torch.sign(self.xform_params.grad) * self.step_size)
+        self.xform_params[:, 0].sub_(torch.sign(self.xform_params.grad[:, 0]) * self.hue_step_size)
+        self.xform_params[:, 1].sub_(torch.sign(self.xform_params.grad[:, 1]) * self.sat_step_size)
         # clamp hue and saturation params
         self.xform_params[:, 0].copy_(torch.clamp(self.xform_params[:, 0], min=self.hue_bounds[0],
                                                   max=self.hue_bounds[1]))
         self.xform_params[:, 1].copy_(torch.clamp(self.xform_params[:, 1], min=self.saturation_bounds[0],
                                                   max=self.saturation_bounds[1]))
-

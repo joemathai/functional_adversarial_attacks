@@ -5,9 +5,9 @@ class SpatialFlowFields(torch.nn.Module):
     """
     An implementation of spatially transformed adversarial examples https://arxiv.org/pdf/1801.02612.pdf
     """
-    def __init__(self, batch_size, c, h, w, grid_scale_factor=1, step_size=0.005, pixel_shift_budget=2):
+    def __init__(self, batch_shape, grid_scale_factor=1, step_size=0.005, pixel_shift_budget=2):
         """
-        :param batch_size:
+        :param batch_shape:
         :param c:
         :param h:
         :param w:
@@ -15,6 +15,7 @@ class SpatialFlowFields(torch.nn.Module):
         isolation
         """
         super().__init__()
+        batch_size, c, h, w = batch_shape
         assert h % grid_scale_factor == w % grid_scale_factor == 0, "height and width should be divisible by grid size"
         self.grid_size = grid_scale_factor
         self.step_size = step_size

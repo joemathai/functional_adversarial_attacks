@@ -29,27 +29,22 @@ def validation(classifier, x, x_adv, y):
     return (100 * sum(attack_successful) / x.shape[0]).item()
 
 
-def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/255.0,) * 3,
-                    pixel_shift_budget=2.0, num_iterations=20, perturbation_step_size=1.0 / 255.0,
-                    keep_best=True, validator=validation, l2_smoothing_loss=False,
-                    l2_smooth_loss_weight=1e-4, early_stopping=True):
+def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=20, keep_best=True,
+                    validator=validation, l2_smoothing_loss=False, l2_smooth_loss_weight=1e-4, early_stopping=True):
     """
     A method to combine global and local adversarial attacks
     :param perturbation: nn.sequential model of all the transforms to be applied
     :param classifier: Classifier network to attack
     :param examples: N x C x H X W batch
     :param labels: ground truth of the batch N x 1
-    :param linf_budget: budget for Lp attack and ColorTransforms attack
-    :param pixel_shift_budget: the maximum shift each pixel can take in x and y axis
-                               note: for Thin Plate Splines this is applied to control points only
     :param num_iterations: max num of iterations to run the PGD based iterative attack
-    :param perturbation_step_size: Step size by which to modify the parameters
     :param keep_best: save and return the perturbed images with the least loss
     :param validator: A method that takes arguments (classifier, x, x_adv, y)
                       and return a value from [0.0, 100.0] indicating the success rate of the attack
     :param l2_smoothing_loss: If true applies the lsmooth loss from the paper https://arxiv.org/pdf/1801.02612.pdf
                               to both ReColor and SpatialFlowField attacks
     :param l2_smooth_loss_weight: weight for the l2_smooth_loss
+    :param early_stopping: if the loss doesn't improve stop the iterations
     :return:
     """
     num_examples = examples.shape[0]
@@ -99,14 +94,13 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, linf_budget=(8/2
         with torch.no_grad():
             # update the weights of the perturbation network
             for module in perturbation.modules():
-                if type(module) in (torch.nn.Sequential,):
-                    continue
-                elif type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
+                if type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
                                       GaussianBlur, AffineTransforms, Delta, ColorTransforms, ConvolutionalKernel,
                                       SpatialFlowFields, ThinPlateSplines):
                     module.update_and_project_params()
                 else:
-                    raise RuntimeError(f'{module} update function not defined')
+                    logger.debug(f"not updating {type(module).__name__}")
+                    continue
 
         # bookkeeping to track the best perturbed examples
         if keep_best:

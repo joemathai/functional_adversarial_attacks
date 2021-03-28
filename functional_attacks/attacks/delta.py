@@ -5,8 +5,9 @@ class Delta(torch.nn.Module):
     """
     A basic additive layer that transforms x = x + delta
     """
-    def __init__(self, batch_size, c, h, w, step_size=1/255, linf_budget=10/255):
+    def __init__(self, batch_shape, step_size=1/255, linf_budget=4/255):
         super().__init__()
+        batch_size, c, h, w = batch_shape
         self.step_size = step_size
         self.linf_budget = linf_budget
         self.register_buffer('identity_params',

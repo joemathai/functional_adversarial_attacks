@@ -6,10 +6,10 @@ class AffineTransforms(torch.nn.Module):
     """
     An affine transformation based attack
     """
-    def __init__(self, batch_size, step_size=0.01):
+    def __init__(self, batch_shape, step_size=0.01):
         super().__init__()
         self.step_size = step_size
-        self.xform_params = torch.nn.Parameter(torch.eye(2, 3).unsqueeze(dim=0).repeat(batch_size, 1, 1))
+        self.xform_params = torch.nn.Parameter(torch.eye(2, 3).unsqueeze(dim=0).repeat(batch_shape[0], 1, 1))
 
     def forward(self, imgs):
         b, c, h, w = imgs.shape

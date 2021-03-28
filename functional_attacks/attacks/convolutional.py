@@ -38,10 +38,10 @@ class ConvolutionalKernel(torch.nn.Module):
     A thin layer of convolutional kernels used to attack the image
     """
 
-    def __init__(self, batch_size, input_channels=3, output_channels=3, kernel_size=3, stride=1, padding=1, step_size=0.01):
+    def __init__(self, batch_shape, input_channels=3, output_channels=3, kernel_size=3, stride=1, padding=1, step_size=0.01):
         super().__init__()
         assert input_channels == output_channels, "for channel independent convkernel attack input_c == output_c"
-        self.batch_size = batch_size
+        self.batch_shape = batch_shape
         self.input_channels =input_channels
         self.output_channels = output_channels
         self.kernel_size = kernel_size
@@ -52,7 +52,7 @@ class ConvolutionalKernel(torch.nn.Module):
         # fill the kernel with identity preserving function
         torch.nn.init.dirac_(weights)
         # # for each image create a convolutional weight tensor (the weights are not shared)
-        weights = weights.repeat(batch_size * input_channels, 1, 1, 1)
+        weights = weights.repeat(batch_shape[0] * input_channels, 1, 1, 1)
         self.xform_params = torch.nn.Parameter(weights)
 
     def forward(self, imgs):
@@ -66,8 +66,8 @@ class ConvolutionalKernel(torch.nn.Module):
     def update_and_project_params(self):
         params_shape = self.xform_params.shape
         self.xform_params.sub_(torch.sign(self.xform_params.grad) * self.step_size)
-        self.xform_params.copy_((self.xform_params.view(self.batch_size, self.output_channels, -1) /
-                                 torch.norm(self.xform_params.view(self.batch_size, self.output_channels, -1), p=1,
+        self.xform_params.copy_((self.xform_params.view(self.batch_shape[0], self.output_channels, -1) /
+                                 torch.norm(self.xform_params.view(self.batch_shape[0], self.output_channels, -1), p=1,
                                             dim=2, keepdim=True)).view(*params_shape))
 
 

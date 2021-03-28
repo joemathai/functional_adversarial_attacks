@@ -3,12 +3,12 @@ from torch.nn.functional import conv2d, pad as torch_pad
 
 
 class GaussianBlur(torch.nn.Module):
-    def __init__(self, batch_size, kernel_size=5, step_size=0.1, sigma_bounds=(0.2, 2.0)):
+    def __init__(self, batch_shape, kernel_size=5, step_size=0.1, sigma_bounds=(0.2, 2.0)):
         super().__init__()
         self.kernel_size = kernel_size
         self.step_size = step_size
         self.sigma_bounds = sigma_bounds
-        self.xform_params = torch.nn.Parameter(torch.ones(batch_size, 2))
+        self.xform_params = torch.nn.Parameter(torch.ones(batch_shape[0], 2))
 
     @staticmethod
     def _get_gaussian_kernel1d(kernel_size, sigma):
@@ -31,7 +31,7 @@ class GaussianBlur(torch.nn.Module):
         kernel = kernel.expand(img.shape[-3], 1, kernel.shape[0], kernel.shape[1])
         # padding = (left, right, top, bottom)
         padding = [kernel_size[0] // 2, kernel_size[0] // 2, kernel_size[1] // 2, kernel_size[1] // 2]
-        img = torch_pad(img.unsqueeze_(0), padding, mode="reflect")
+        img = torch_pad(img.unsqueeze(0), padding, mode="reflect")
         img = conv2d(img, kernel, groups=img.shape[-3])
         return img
 

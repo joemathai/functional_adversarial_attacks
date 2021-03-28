@@ -6,10 +6,9 @@ class ColorTransforms(torch.nn.Module):
     An implementation of functional adversarial attack https://papers.nips.cc/paper/2019/file/6e923226e43cd6fac7cfe1e13ad000ac-Paper.pdf
     The code is taken from https://github.com/cassidylaidlaw/ReColorAdv
     RGB -> CIELUV color space is not yet implemented
-    f-smooth proposed in the paper is not yet implemented
     """
 
-    def __init__(self, batch_size, resolution_x, resolution_y, resolution_z, step_size=0.003, linf_budget=0.03):
+    def __init__(self, batch_shape, resolution_x=32, resolution_y=32, resolution_z=32, step_size=0.003, linf_budget=0.03):
         super().__init__()
         self.resolution_x = resolution_x
         self.resolution_y = resolution_y
@@ -18,7 +17,7 @@ class ColorTransforms(torch.nn.Module):
         self.linf_budget = linf_budget
         # construct identity parameters
         self.register_buffer('identity_params',
-                             torch.empty(batch_size, resolution_x, resolution_y, resolution_z, 3, dtype=torch.float32),
+                             torch.empty(batch_shape[0], resolution_x, resolution_y, resolution_z, 3, dtype=torch.float32),
                              persistent=False)
         for x in range(resolution_x):
             for y in range(resolution_y):
@@ -27,7 +26,6 @@ class ColorTransforms(torch.nn.Module):
                     self.identity_params[:, x, y, z, 1] = y / (resolution_y - 1)
                     self.identity_params[:, x, y, z, 2] = z / (resolution_z - 1)
         self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params))
-        print(self.xform_params[0])
 
     def forward(self, imgs):
         N, C, H, W = imgs.shape
