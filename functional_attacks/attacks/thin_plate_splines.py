@@ -21,7 +21,7 @@ class ThinPlateSplines(torch.nn.Module):
         return torch.clamp(sqrA - 2 * torch.bmm(A, B.permute(0, 2, 1)) + sqrB, min=0)
 
     def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=300, step_size=0.001,
-                 pixel_shift_budget=1.5):
+                 pixel_shift_budget=1.5, random_init=False):
         """
         formulation of TPS
         x' = a0 + a1x +a2y + Σ f_i * U(||(xi,yi)-(x,y)||)
@@ -75,10 +75,18 @@ class ThinPlateSplines(torch.nn.Module):
         # delta to be added to the source control points to get destination control points
         self.register_buffer("identity_params", torch.zeros(src_pts.shape, dtype=torch.float32, requires_grad=False),
                              persistent=False)
-        self.xform_params = torch.nn.Parameter(torch.zeros(src_pts.shape, dtype=torch.float32, requires_grad=True) + 1e-8)
+        if random_init:
+            min_shift_budget = min(self.h_per_pixel_shift, self.w_per_pixel_shift)
+            self.xform_params = torch.nn.Parameter(
+                torch.empty_like(src_pts, dtype=torch.float32).uniform_(-min_shift_budget, min_shift_budget)
+            )
+        else:
+            self.xform_params = torch.nn.Parameter(
+                torch.zeros(src_pts.shape, dtype=torch.float32, requires_grad=True) + 1e-8)
 
         # grid points and U(grid_points)
-        self.register_buffer('grid_pts', torch.cat([torch.ones((batch_size, h * w, 1), device=self.grid.device), self.grid.view(batch_size, h * w, 2)], dim=2))
+        self.register_buffer('grid_pts', torch.cat([torch.ones((batch_size, h * w, 1), device=self.grid.device),
+                                                    self.grid.view(batch_size, h * w, 2)], dim=2))
         grid_pts_r2 = ThinPlateSplines.all_pair_square_l2_norm(self.grid.view(batch_size, h * w, 2), self.src_pts)
         self.register_buffer('grid_pts_u', grid_pts_r2 * torch.log(grid_pts_r2 + 1e-10), persistent=False)  # N, grid_pts, src_pts
 

@@ -8,7 +8,8 @@ class ColorTransforms(torch.nn.Module):
     RGB -> CIELUV color space is not yet implemented
     """
 
-    def __init__(self, batch_shape, resolution_x=32, resolution_y=32, resolution_z=32, step_size=0.003, linf_budget=0.03):
+    def __init__(self, batch_shape, resolution_x=32, resolution_y=32, resolution_z=32,
+                 step_size=0.003, linf_budget=0.03, random_init=False):
         super().__init__()
         self.resolution_x = resolution_x
         self.resolution_y = resolution_y
@@ -25,7 +26,15 @@ class ColorTransforms(torch.nn.Module):
                     self.identity_params[:, x, y, z, 0] = x / (resolution_x - 1)
                     self.identity_params[:, x, y, z, 1] = y / (resolution_y - 1)
                     self.identity_params[:, x, y, z, 2] = z / (resolution_z - 1)
-        self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params))
+
+        # if random_init then add uniform noise to the xform param within the linf_budget
+        if random_init:
+            self.xform_params = torch.nn.Parameter(
+                torch.empty_like(self.identity_params).copy_(self.identity_params) +
+                torch.empty_like(self.identity_params).uniform_(-self.linf_budget, self.linf_budget)
+            )
+        else:
+            self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params))
 
     def forward(self, imgs):
         N, C, H, W = imgs.shape

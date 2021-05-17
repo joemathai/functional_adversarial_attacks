@@ -3,12 +3,15 @@ from torch.nn.functional import conv2d, pad as torch_pad
 
 
 class GaussianBlur(torch.nn.Module):
-    def __init__(self, batch_shape, kernel_size=5, step_size=0.1, sigma_bounds=(0.2, 2.0)):
+    def __init__(self, batch_shape, kernel_size=5, step_size=0.1, sigma_bounds=(0.2, 2.0), random_init=False):
         super().__init__()
         self.kernel_size = kernel_size
         self.step_size = step_size
         self.sigma_bounds = sigma_bounds
-        self.xform_params = torch.nn.Parameter(torch.ones(batch_shape[0], 2))
+        if random_init:
+            self.xform_params = torch.nn.Parameter(torch.zeros((batch_shape[0], 2)).uniform_(*sigma_bounds))
+        else:
+            self.xform_params = torch.nn.Parameter(torch.ones(batch_shape[0], 2))
 
     @staticmethod
     def _get_gaussian_kernel1d(kernel_size, sigma):

@@ -5,7 +5,7 @@ class SpatialFlowFields(torch.nn.Module):
     """
     An implementation of spatially transformed adversarial examples https://arxiv.org/pdf/1801.02612.pdf
     """
-    def __init__(self, batch_shape, grid_scale_factor=1, step_size=0.005, pixel_shift_budget=2):
+    def __init__(self, batch_shape, grid_scale_factor=1, step_size=0.005, pixel_shift_budget=2, random_init=False):
         """
         :param batch_shape:
         :param c:
@@ -27,8 +27,15 @@ class SpatialFlowFields(torch.nn.Module):
                                                              align_corners=False),
                              persistent=False
                              )
-        self.xform_params = torch.nn.Parameter(torch.empty(*self.identity_params.shape,
-                                                           dtype=torch.float32).copy_(self.identity_params))
+        if random_init:
+            min_shift = min(self.h_per_pixel_shift, self.w_per_pixel_shift)
+            self.xform_params = torch.nn.Parameter(torch.empty(*self.identity_params.shape,
+                                                               dtype=torch.float32).copy_(self.identity_params) +
+                                                   torch.empty_like(self.identity_params, dtype=torch.float32).uniform_(
+                                                       -min_shift, min_shift))
+        else:
+            self.xform_params = torch.nn.Parameter(torch.empty(*self.identity_params.shape,
+                                                               dtype=torch.float32).copy_(self.identity_params))
 
     def forward(self, imgs):
         if self.grid_size != 1:

@@ -47,7 +47,7 @@ def _hsv2rgb(h, s, v):
 
 class AdjustHueSaturation(torch.nn.Module):
     def __init__(self, batch_shape, hue_step_size=0.002, sat_step_size=0.04, saturation_bounds=(0.2, 2.0),
-                 hue_bounds=(-0.5, 0.5)):
+                 hue_bounds=(-0.5, 0.5), random_init=False):
         super().__init__()
         self.hue_step_size = hue_step_size
         self.sat_step_size = sat_step_size
@@ -55,6 +55,9 @@ class AdjustHueSaturation(torch.nn.Module):
         self.hue_bounds = hue_bounds
         saturation_params = torch.ones(batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
         hue_params = torch.zeros(batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
+        if random_init:
+            saturation_params.uniform_(*saturation_bounds)
+            hue_params.uniform_(*hue_bounds)
         self.xform_params = torch.nn.Parameter(torch.cat([hue_params, saturation_params], dim=1))
 
     def forward(self, imgs):

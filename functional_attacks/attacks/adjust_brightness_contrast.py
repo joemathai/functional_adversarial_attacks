@@ -6,7 +6,7 @@ class AdjustBrightnessContrast(torch.nn.Module):
     A thin layer of convolutional kernels used to attack the image
     """
     def __init__(self, batch_shape, brightness_step_size=3/255., contrast_step_size=0.03,
-                 brightness_bounds=(-0.5, 0.5), contrast_bounds=(0.5, 1.5)):
+                 brightness_bounds=(-0.5, 0.5), contrast_bounds=(0.5, 1.5), random_init=False):
         super().__init__()
         self.batch_shape = batch_shape
         self.brightness_step_size = brightness_step_size
@@ -15,6 +15,10 @@ class AdjustBrightnessContrast(torch.nn.Module):
         self.contrast_bounds = contrast_bounds
         alpha = torch.ones(self.batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
         beta = torch.zeros(self.batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
+        # if random_init then add uniform noise to alpha and beta
+        if random_init:
+            alpha += torch.empty_like(alpha).uniform_(*contrast_bounds)
+            beta += torch.empty_like(beta).uniform_(*brightness_bounds)
         self.xform_params = torch.nn.Parameter(torch.cat([alpha, beta], dim=1))
 
     def forward(self, imgs):

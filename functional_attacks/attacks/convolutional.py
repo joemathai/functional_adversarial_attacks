@@ -38,7 +38,8 @@ class ConvolutionalKernel(torch.nn.Module):
     A thin layer of convolutional kernels used to attack the image
     """
 
-    def __init__(self, batch_shape, input_channels=3, output_channels=3, kernel_size=3, stride=1, padding=1, step_size=0.01):
+    def __init__(self, batch_shape, input_channels=3, output_channels=3, kernel_size=3, stride=1, padding=1,
+                 step_size=0.01, random_init=False):
         super().__init__()
         assert input_channels == output_channels, "for channel independent convkernel attack input_c == output_c"
         self.batch_shape = batch_shape
@@ -54,6 +55,9 @@ class ConvolutionalKernel(torch.nn.Module):
         # # for each image create a convolutional weight tensor (the weights are not shared)
         weights = weights.repeat(batch_shape[0] * input_channels, 1, 1, 1)
         self.xform_params = torch.nn.Parameter(weights)
+        if random_init:
+            import warnings
+            warnings.warn("using random_init=True is not supported for AffineTransforms")
 
     def forward(self, imgs):
         batch_size, c, h, w = imgs.shape

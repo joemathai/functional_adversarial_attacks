@@ -3,14 +3,16 @@ import torch
 
 class AdjustGamma(torch.nn.Module):
     """
-    A thin layer of convolutional kernels used to attack the image
+    A thin layer of convolutional kernels used to attack the image
     """
-    def __init__(self, batch_shape, step_size=0.05, gamma_bounds=(0.3, 3.2), gain=1.0):
+    def __init__(self, batch_shape, step_size=0.05, gamma_bounds=(0.3, 3.2), gain=1.0, random_init=False):
         super().__init__()
         self.step_size = step_size
         self.gamma_bounds = gamma_bounds
         self.gain = gain
         gamma = torch.ones(batch_shape[0], dtype=torch.float32).unsqueeze_(dim=1)
+        if random_init:
+            gamma += torch.empty_like(gamma).uniform_(*gamma_bounds)
         self.xform_params = torch.nn.Parameter(gamma)
 
     def forward(self, imgs):

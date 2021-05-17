@@ -3,11 +3,14 @@ import torchvision
 
 
 class AdjustSharpness(torch.nn.Module):
-    def __init__(self, batch_shape, step_size=0.1, sharpness_bounds=(0.0, 5.0)):
+    def __init__(self, batch_shape, step_size=0.1, sharpness_bounds=(0.0, 5.0), random_init=False):
         super().__init__()
         self.step_size = step_size
         self.sharpness_bounds = sharpness_bounds
-        self.xform_params = torch.nn.Parameter(torch.ones(batch_shape[0]))
+        if random_init:
+            self.xform_params = torch.nn.Parameter(torch.ones(batch_shape[0]).uniform_(*sharpness_bounds))
+        else:
+            self.xform_params = torch.nn.Parameter(torch.ones(batch_shape[0]))
 
     def forward(self, imgs):
         sharpned_imgs = list()

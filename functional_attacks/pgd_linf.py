@@ -4,7 +4,7 @@ import logging
 from functional_attacks.attacks import AffineTransforms, ColorTransforms, Delta, \
     SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel, AdjustBrightnessContrast, \
     AdjustGamma, AdjustHueSaturation, AdjustSharpness, GaussianBlur
-from functional_attacks.loss import CWLossF6, l2_grid_smoothness
+from functional_attacks.loss import CWLossF6, l2_grid_smoothness, CrossEntropyLoss
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,7 @@ def validation(classifier, x, x_adv, y):
     y_pred = classifier(x_adv).topk(1)[1].cpu().numpy()
     y = y.cpu().numpy()
     attack_successful = [y[i] != y_pred[i] for i in range(x.shape[0])]
-    linf_metric = torch.norm(x.view(x.shape[0], -1) - x_adv.view(x.shape[0], -1), p=float('inf'), dim=1).cpu().numpy()
+    linf_metric = torch.norm(x.reshape(x.shape[0], -1) - x_adv.reshape(x.shape[0], -1), p=float('inf'), dim=1).cpu().numpy()
     logger.debug(f"linf: {linf_metric}")
     logger.debug(f"pgd_attack_with_perturbation state: (idx, success, gt, linf) : "
                  f"{list(zip(list(range(y.shape[0])), attack_successful, y, linf_metric))}")
@@ -30,7 +30,8 @@ def validation(classifier, x, x_adv, y):
 
 
 def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=20, keep_best=True,
-                    validator=validation, l2_smoothing_loss=False, l2_smooth_loss_weight=1e-4, early_stopping=True):
+                    validator=validation, l2_smoothing_loss=False, l2_smooth_loss_weight=1e-4, early_stopping=True,
+                    loss_fn_type='cw_f6'):
     """
     A method to combine global and local adversarial attacks
     :param perturbation: nn.sequential model of all the transforms to be applied
@@ -45,13 +46,20 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
                               to both ReColor and SpatialFlowField attacks
     :param l2_smooth_loss_weight: weight for the l2_smooth_loss
     :param early_stopping: if the loss doesn't improve stop the iterations
+    :param loss_fn_type: the loss to use for adversarial optimization
     :return:
     """
     num_examples = examples.shape[0]
     best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
                                           device=examples.device, requires_grad=False).copy_(examples)
     best_loss_per_example = [float('inf') for _ in range(num_examples)]
-    loss_fn = CWLossF6(classifier)
+    
+    if loss_fn_type == 'cw_f6':
+        loss_fn = CWLossF6(classifier)
+    elif loss_fn_type == "xent":
+        loss_fn = CrossEntropyLoss(classifier)
+    else:
+        raise RuntimeError(f"{loss_fn} is not defined for pgd_attack_linf method")
 
     if validator is not None:
         validation = validator(classifier, examples, best_perturbed_examples, labels)
@@ -70,7 +78,7 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
         # apply CW Linf loss without constraint to minimize the linf budget
         cw_f6_loss_per_example = loss_fn(perturbed_examples, labels)
         total_loss_per_example = total_loss_per_example + cw_f6_loss_per_example
-        logger.info("cw_f6 iter:%d loss: %.3f", iter_no, cw_f6_loss_per_example.sum().item())
+        logger.info("%s iter:%d loss: %.3f", loss_fn_type, iter_no, cw_f6_loss_per_example.sum().item())
 
         # smoothness loss for params of ReColor and SpatialFlowField
         if l2_smoothing_loss:
