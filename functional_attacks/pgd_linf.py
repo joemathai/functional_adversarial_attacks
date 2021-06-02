@@ -1,7 +1,7 @@
 import torch
 import logging
 
-from functional_attacks.attacks import AffineTransforms, ColorTransforms, Delta, \
+from functional_attacks.attacks import AffineTransforms, SWIRColorTransforms, ColorTransforms, Delta, \
     SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel, AdjustBrightnessContrast, \
     AdjustGamma, AdjustHueSaturation, AdjustSharpness, GaussianBlur
 from functional_attacks.loss import CWLossF6, l2_grid_smoothness, CrossEntropyLoss
@@ -53,7 +53,13 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
     best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
                                           device=examples.device, requires_grad=False).copy_(examples)
     best_loss_per_example = [float('inf') for _ in range(num_examples)]
-    
+
+    # track k for GAIRAT https://openreview.net/pdf?id=iAX0l6Cz8ub
+    with torch.no_grad():
+        initial_predictions = torch.argmax(classifier(examples), dim=1)
+        gairat_k = torch.zeros(num_examples)
+        best_gairat_k = torch.zeros(num_examples)
+        
     if loss_fn_type == 'cw_f6':
         loss_fn = CWLossF6(classifier)
     elif loss_fn_type == "xent":
@@ -65,11 +71,17 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
         validation = validator(classifier, examples, best_perturbed_examples, labels)
         logger.info("iter: %d attack-success-rate: %.3f", 0, validation)
 
-    perturbed_examples = None
+    perturbed_examples = examples
     previous_loss = torch.tensor(0.0)
     for iter_no in range(num_iterations):
+
+        # GAIRAT https://openreview.net/pdf?id=iAX0l6Cz8ub
+        with torch.no_grad():
+            current_predictions  = torch.argmax(classifier(perturbed_examples), dim=1)
+            gairat_k[current_predictions == initial_predictions] += 1
+            
         # unravel the sequential model and separate out linf from deformation methods
-        # apply linf based perturbations and clip the combined perturbations
+        # apply linf based perturbations and clip the combined perturbationsb
         perturbed_examples = perturbation(examples)
 
         # total loss
@@ -103,36 +115,37 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
             # update the weights of the perturbation network
             for module in perturbation.modules():
                 if type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
-                                      GaussianBlur, AffineTransforms, Delta, ColorTransforms, ConvolutionalKernel,
+                                      GaussianBlur, AffineTransforms, Delta, SWIRColorTransforms, ColorTransforms, ConvolutionalKernel,
                                       SpatialFlowFields, ThinPlateSplines):
                     module.update_and_project_params()
                 else:
                     logger.debug(f"not updating {type(module).__name__}")
                     continue
 
-        # bookkeeping to track the best perturbed examples
-        if keep_best:
-            for i, el in enumerate(total_loss_per_example):
-                cur_best_loss = best_loss_per_example[i]
-                if cur_best_loss > float(el):
-                    best_loss_per_example[i] = float(el)
-                    best_perturbed_examples[i].copy_(perturbed_examples[i].data)
+            # bookkeeping to track the best perturbed examples
+            if keep_best:
+                for i, el in enumerate(total_loss_per_example):
+                    cur_best_loss = best_loss_per_example[i]
+                    if cur_best_loss > float(el):
+                        best_loss_per_example[i] = float(el)
+                        best_gairat_k[i] = gairat_k[i]
+                        best_perturbed_examples[i].copy_(perturbed_examples[i].data)
 
-        # If validation is provided do early stopping
-        if validator is not None:
-            validation = validator(classifier, examples, best_perturbed_examples, labels)
-            logger.info("iter: %d attack-success-rate: %.3f", iter_no + 1, validation)
+            # If validation is provided do early stopping
+            if validator is not None:
+                validation = validator(classifier, examples, best_perturbed_examples, labels)
+                logger.info("iter: %d attack-success-rate: %.3f", iter_no + 1, validation)
 
-        # early stopping
-        if early_stopping and torch.allclose(total_loss_per_example.sum(), previous_loss):
-            logger.warning("the loss didn't improve from previous iteration, stopping PGD optimization for the batch")
-            break
+            # early stopping
+            if early_stopping and torch.allclose(total_loss_per_example.sum(), previous_loss):
+                logger.warning("the loss didn't improve from previous iteration, stopping PGD optimization for the batch")
+                break
 
-        previous_loss = total_loss_per_example.sum()
+            previous_loss = total_loss_per_example.sum()
 
     # clean up the accumulated gradients
     classifier.zero_grad()
     perturbation.zero_grad()
     if keep_best:
-        return best_perturbed_examples
-    return perturbed_examples.detach()
+        return best_perturbed_examples, best_gairat_k
+    return perturbed_examples.detach(), gairat_k
