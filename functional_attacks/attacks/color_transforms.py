@@ -5,7 +5,7 @@ class SWIRColorTransforms(torch.nn.Module):
     """
     Channel invariant non-linear color transform for SWIR or grayscale images
     """
-    def __init__(self, batch_shape, resolution=32, step_size=0.003, linf_budget=0.03, random_init=False):
+    def __init__(self, batch_shape, resolution=64, step_size=0.003, linf_budget=0.1, random_init=False):
         super().__init__()
         self.resolution = resolution
         self.step_size = step_size
@@ -54,8 +54,8 @@ class ColorTransforms(torch.nn.Module):
     RGB -> CIELUV color space is not yet implemented
     """
 
-    def __init__(self, batch_shape, resolution_x=32, resolution_y=32, resolution_z=32,
-                 step_size=0.003, linf_budget=0.03, random_init=False):
+    def __init__(self, batch_shape, resolution_x=64, resolution_y=64, resolution_z=64,
+                 step_size=0.003, linf_budget=0.1, random_init=False):
         super().__init__()
         self.resolution_x = resolution_x
         self.resolution_y = resolution_y

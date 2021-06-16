@@ -8,7 +8,7 @@ class CrossEntropyLoss(torch.nn.Module):
         """
         super().__init__()
         self.classifier = classifier
-        self.loss_fn = torch.nn.CrossEntropyLoss()
+        self.loss_fn = torch.nn.CrossEntropyLoss(reduction='none')
 
     def forward(self, images, labels, **kwargs):
         classifier_out = self.classifier.forward(images)

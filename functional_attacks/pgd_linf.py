@@ -90,33 +90,33 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
         # apply CW Linf loss without constraint to minimize the linf budget
         cw_f6_loss_per_example = loss_fn(perturbed_examples, labels)
         total_loss_per_example = total_loss_per_example + cw_f6_loss_per_example
-        logger.info("%s iter:%d loss: %.3f", loss_fn_type, iter_no, cw_f6_loss_per_example.sum().item())
 
+        # note: the grid loss needs to be made for each example (not the combined norm for adding to total loss)
         # smoothness loss for params of ReColor and SpatialFlowField
-        if l2_smoothing_loss:
-            for module in perturbation.modules():
-                if type(module) in (ColorTransforms, SpatialFlowFields):
-                    smooth_loss_per_example = l2_grid_smoothness(
-                        module.xform_params - module.identity_params) * l2_smooth_loss_weight
-                    total_loss_per_example = total_loss_per_example + smooth_loss_per_example
-                    logger.info("[%s] smooth loss iter:%d loss: %.3f", type(module).__name__, iter_no,
-                                 smooth_loss_per_example.sum().item())
+        # if l2_smoothing_loss:
+        #     for module in perturbation.modules():
+        #         if type(module) in (ColorTransforms, SpatialFlowFields):
+        #             smooth_loss_per_example = l2_grid_smoothness(
+        #                 module.xform_params - module.identity_params) * l2_smooth_loss_weight
+        #             total_loss_per_example = total_loss_per_example + smooth_loss_per_example
+        #             logger.info("[%s] smooth loss iter:%d loss: %.3f", type(module).__name__, iter_no,
+        #                          smooth_loss_per_example.sum().item())
 
         # clear the gradients of the perturbation model using the optimizer
         perturbation.zero_grad()
         # this is not exactly needed but a good practice
         classifier.zero_grad()
-
         # backpropagate the loss
         total_loss_per_example.sum().backward()
+        
         logger.info("total loss iter: %d, loss: %.3f", iter_no, total_loss_per_example.sum().item())
 
         with torch.no_grad():
             # update the weights of the perturbation network
             for module in perturbation.modules():
                 if type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
-                                      GaussianBlur, AffineTransforms, Delta, SWIRColorTransforms, ColorTransforms, ConvolutionalKernel,
-                                      SpatialFlowFields, ThinPlateSplines):
+                                    GaussianBlur, AffineTransforms, Delta, SWIRColorTransforms, ColorTransforms, ConvolutionalKernel,
+                                    SpatialFlowFields, ThinPlateSplines):
                     module.update_and_project_params()
                 else:
                     logger.debug(f"not updating {type(module).__name__}")

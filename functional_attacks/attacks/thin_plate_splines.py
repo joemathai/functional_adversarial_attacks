@@ -20,7 +20,7 @@ class ThinPlateSplines(torch.nn.Module):
         sqrB = torch.sum(torch.pow(B, 2), dim=2, keepdim=True).expand(B.shape[0], B.shape[1], A.shape[1]).permute(0, 2, 1)
         return torch.clamp(sqrA - 2 * torch.bmm(A, B.permute(0, 2, 1)) + sqrB, min=0)
 
-    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=300, step_size=0.001,
+    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=300, step_size=0.1,
                  pixel_shift_budget=1.5, random_init=False):
         """
         formulation of TPS

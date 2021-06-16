@@ -5,7 +5,7 @@ class SpatialFlowFields(torch.nn.Module):
     """
     An implementation of spatially transformed adversarial examples https://arxiv.org/pdf/1801.02612.pdf
     """
-    def __init__(self, batch_shape, grid_scale_factor=1, step_size=0.005, pixel_shift_budget=2, random_init=False):
+    def __init__(self, batch_shape, grid_scale_factor=1, step_size=0.1, pixel_shift_budget=2, random_init=False):
         """
         :param batch_shape:
         :param c:

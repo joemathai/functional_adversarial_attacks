@@ -5,7 +5,7 @@ class AdjustBrightnessContrast(torch.nn.Module):
     """
     A thin layer of convolutional kernels used to attack the image
     """
-    def __init__(self, batch_shape, brightness_step_size=3/255., contrast_step_size=0.03,
+    def __init__(self, batch_shape, brightness_step_size=0.05, contrast_step_size=0.05,
                  brightness_bounds=(-0.5, 0.5), contrast_bounds=(0.5, 1.5), random_init=False):
         super().__init__()
         self.batch_shape = batch_shape
