@@ -46,7 +46,7 @@ def _hsv2rgb(h, s, v):
 
 
 class AdjustHueSaturation(torch.nn.Module):
-    def __init__(self, batch_shape, hue_step_size=0.002, sat_step_size=0.04, saturation_bounds=(0.2, 2.0),
+    def __init__(self, batch_shape, hue_step_size=0.01, sat_step_size=0.02, saturation_bounds=(0.2, 2.0),
                  hue_bounds=(-0.5, 0.5), random_init=False):
         super().__init__()
         self.hue_step_size = hue_step_size

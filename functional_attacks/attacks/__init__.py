@@ -1,4 +1,4 @@
-from functional_attacks.attacks.affine_transformations import AffineTransforms
+from functional_attacks.attacks.affine_transformations import AffineTransforms, RotationTranslationTransforms
 from functional_attacks.attacks.color_transforms import SWIRColorTransforms, ColorTransforms
 from functional_attacks.attacks.delta import Delta
 from functional_attacks.attacks.sptial_flow_fields import SpatialFlowFields

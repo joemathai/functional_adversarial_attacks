@@ -20,6 +20,11 @@ class AdjustGamma(torch.nn.Module):
         formula used for adjusting gamma is x' = gain * x ^ gamma
         """
         b, c, h, w = imgs.shape
+        
+        if torch.lt(imgs, 0).any():
+            print("range of values", imgs.min(), imgs.max())
+            raise RuntimeError('negative values found in gamma function')
+            
         return self.gain * torch.pow(imgs.reshape(b, -1), self.xform_params.view(-1, 1)).reshape(b, c, h, w)
 
     @torch.no_grad()

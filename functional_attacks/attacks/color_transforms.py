@@ -21,7 +21,6 @@ class SWIRColorTransforms(torch.nn.Module):
         else:
             self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params))
 
-
     def forward(self, imgs):
         N, C, H, W = imgs.shape
         imgs = imgs.permute(0, 2, 3, 1) # N, H, W, C
@@ -124,7 +123,7 @@ class ColorTransforms(torch.nn.Module):
             )
 
         result = endpoint_values[0] * (1 - float_part[..., 0, None]) + endpoint_values[1] * float_part[..., 0, None]
-        return result.permute(0, 3, 1, 2)
+        return torch.clamp(result.permute(0, 3, 1, 2), min=0.0, max=1.0)
 
     @torch.no_grad()
     def update_and_project_params(self):

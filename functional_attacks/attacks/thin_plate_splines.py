@@ -20,7 +20,7 @@ class ThinPlateSplines(torch.nn.Module):
         sqrB = torch.sum(torch.pow(B, 2), dim=2, keepdim=True).expand(B.shape[0], B.shape[1], A.shape[1]).permute(0, 2, 1)
         return torch.clamp(sqrA - 2 * torch.bmm(A, B.permute(0, 2, 1)) + sqrB, min=0)
 
-    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=300, step_size=0.1,
+    def __init__(self, batch_shape, src_pts=None, grid_scale_factor=None, num_random_pts=20, step_size=0.1,
                  pixel_shift_budget=1.5, random_init=False):
         """
         formulation of TPS
@@ -65,7 +65,7 @@ class ThinPlateSplines(torch.nn.Module):
         # matrix formed by src control points and radial basis functions
         P = torch.cat([torch.ones(batch_size, num_src_pts, 1, requires_grad=False), src_pts], dim=2)  # N, src_pts, 3
         R2 = ThinPlateSplines.all_pair_square_l2_norm(src_pts, src_pts)
-        K = R2 * torch.log(R2 + 1e-10)  # N x src_pts x src_pts
+        K = R2 * torch.log(torch.sqrt(R2) + 1e-10)  # N x src_pts x src_pts
         self.register_buffer("L", torch.cat([torch.cat([K, P], dim=2),
                                              torch.cat([P.permute(0, 2, 1),
                                                         torch.zeros(P.shape[0], 3, 3, requires_grad=False)], dim=2)],
@@ -88,7 +88,7 @@ class ThinPlateSplines(torch.nn.Module):
         self.register_buffer('grid_pts', torch.cat([torch.ones((batch_size, h * w, 1), device=self.grid.device),
                                                     self.grid.view(batch_size, h * w, 2)], dim=2))
         grid_pts_r2 = ThinPlateSplines.all_pair_square_l2_norm(self.grid.view(batch_size, h * w, 2), self.src_pts)
-        self.register_buffer('grid_pts_u', grid_pts_r2 * torch.log(grid_pts_r2 + 1e-10), persistent=False)  # N, grid_pts, src_pts
+        self.register_buffer('grid_pts_u', grid_pts_r2 * torch.log(torch.sqrt(grid_pts_r2) + 1e-10), persistent=False)  # N, grid_pts, src_pts
 
     def forward(self, imgs):
         n, c, h, w = imgs.shape

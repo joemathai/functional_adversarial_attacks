@@ -1,7 +1,7 @@
 import torch
 import logging
 
-from functional_attacks.attacks import AffineTransforms, SWIRColorTransforms, ColorTransforms, Delta, \
+from functional_attacks.attacks import AffineTransforms, RotationTranslationTransforms, SWIRColorTransforms, ColorTransforms, Delta, \
     SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel, AdjustBrightnessContrast, \
     AdjustGamma, AdjustHueSaturation, AdjustSharpness, GaussianBlur
 from functional_attacks.loss import CWLossF6, l2_grid_smoothness, CrossEntropyLoss
@@ -49,6 +49,10 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
     :param loss_fn_type: the loss to use for adversarial optimization
     :return:
     """
+    if torch.lt(examples, 0).any() or torch.gt(examples, 1).any():
+        logger.error("out of range values found :: range of values in batch (%f, %f)", examples.min(), examples.max())
+        raise RuntimeError('negative values found in pgd_linf function')
+    
     num_examples = examples.shape[0]
     best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
                                           device=examples.device, requires_grad=False).copy_(examples)
@@ -65,31 +69,26 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
     elif loss_fn_type == "xent":
         loss_fn = CrossEntropyLoss(classifier)
     else:
-        raise RuntimeError(f"{loss_fn} is not defined for pgd_attack_linf method")
+        raise RuntimeError(f"{loss_fn_type} is not defined for pgd_attack_linf method")
 
     if validator is not None:
         validation = validator(classifier, examples, best_perturbed_examples, labels)
-        logger.info("iter: %d attack-success-rate: %.3f", 0, validation)
-
+        logger.info("initial attack-success-rate: %.3f", validation)
+        
     perturbed_examples = examples
     previous_loss = torch.tensor(0.0)
+    
     for iter_no in range(num_iterations):
-
+        
         # GAIRAT https://openreview.net/pdf?id=iAX0l6Cz8ub
         with torch.no_grad():
-            current_predictions  = torch.argmax(classifier(perturbed_examples), dim=1)
+            current_predictions = torch.argmax(classifier(perturbed_examples), dim=1)
             gairat_k[current_predictions == initial_predictions] += 1
             
         # unravel the sequential model and separate out linf from deformation methods
-        # apply linf based perturbations and clip the combined perturbationsb
+        # apply linf based perturbations and clip the combined perturbation
         perturbed_examples = perturbation(examples)
-
-        # total loss
-        total_loss_per_example = torch.zeros(size=(examples.shape[0],), requires_grad=True, device=examples.device)
-
-        # apply CW Linf loss without constraint to minimize the linf budget
-        cw_f6_loss_per_example = loss_fn(perturbed_examples, labels)
-        total_loss_per_example = total_loss_per_example + cw_f6_loss_per_example
+        total_loss_per_example = loss_fn(perturbed_examples, labels)
 
         # note: the grid loss needs to be made for each example (not the combined norm for adding to total loss)
         # smoothness loss for params of ReColor and SpatialFlowField
@@ -108,14 +107,15 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
         classifier.zero_grad()
         # backpropagate the loss
         total_loss_per_example.sum().backward()
-        
-        logger.info("total loss iter: %d, loss: %.3f", iter_no, total_loss_per_example.sum().item())
+
+        log_msg = f"iter: {iter_no}, cur_loss: {total_loss_per_example.sum().item():.4f} "
 
         with torch.no_grad():
             # update the weights of the perturbation network
             for module in perturbation.modules():
                 if type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
-                                    GaussianBlur, AffineTransforms, Delta, SWIRColorTransforms, ColorTransforms, ConvolutionalKernel,
+                                    GaussianBlur, AffineTransforms, RotationTranslationTransforms,
+                                    Delta, SWIRColorTransforms, ColorTransforms, ConvolutionalKernel,
                                     SpatialFlowFields, ThinPlateSplines):
                     module.update_and_project_params()
                 else:
@@ -127,18 +127,21 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
                 for i, el in enumerate(total_loss_per_example):
                     cur_best_loss = best_loss_per_example[i]
                     if cur_best_loss > float(el):
+                        logger.debug(f"best loss for idx:{i} found in iter:{iter_no} = {float(el)}")
                         best_loss_per_example[i] = float(el)
                         best_gairat_k[i] = gairat_k[i]
                         best_perturbed_examples[i].copy_(perturbed_examples[i].data)
+                log_msg += f"best_loss: {loss_fn(best_perturbed_examples, labels).sum().item():.4f} "
 
             # If validation is provided do early stopping
             if validator is not None:
                 validation = validator(classifier, examples, best_perturbed_examples, labels)
-                logger.info("iter: %d attack-success-rate: %.3f", iter_no + 1, validation)
+                log_msg += f"attack_success_rate: {validation:.3f} %"
 
             # early stopping
+            logger.info(log_msg)
             if early_stopping and torch.allclose(total_loss_per_example.sum(), previous_loss):
-                logger.warning("the loss didn't improve from previous iteration, stopping PGD optimization for the batch")
+                logger.warning("loss didn't improve from previous iteration, stopping PGD optimization for the batch")
                 break
 
             previous_loss = total_loss_per_example.sum()
