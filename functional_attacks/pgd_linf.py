@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 
 @torch.no_grad()
-def validation(classifier, x, x_adv, y):
+def validation(classifier, x, x_adv, y, norm=False):
     """
     A method to run during each iteration of the pgd_attack_with_perturbation method
     :param classifier: the model that is being attacked
@@ -19,18 +19,18 @@ def validation(classifier, x, x_adv, y):
     :param y: ground truth values for the original images
     :return: success-rate of the attack
     """
-    y_pred = classifier(x_adv).topk(1)[1].cpu().numpy()
-    y = y.cpu().numpy()
-    attack_successful = [y[i] != y_pred[i] for i in range(x.shape[0])]
-    linf_metric = torch.norm(x.reshape(x.shape[0], -1) - x_adv.reshape(x.shape[0], -1), p=float('inf'), dim=1).cpu().numpy()
-    logger.debug(f"linf: {linf_metric}")
-    logger.debug(f"pgd_attack_with_perturbation state: (idx, success, gt, linf) : "
-                 f"{list(zip(list(range(y.shape[0])), attack_successful, y, linf_metric))}")
-    return (100 * sum(attack_successful) / x.shape[0]).item()
+    attack_success_rate = (100 * (classifier(x_adv).topk(1)[1] != y.view(-1, 1)).sum() / x_adv.shape[0]).item()
+    if norm:
+        linf_metric = torch.norm(x.reshape(x.shape[0], -1) - x_adv.reshape(x_adv.shape[0], -1), p=float('inf'), dim=1).item()
+        logger.debug(f"linf: {linf_metric}")
+        logger.debug(f"pgd_attack_with_perturbation state: (idx, success, gt, linf) : "
+                     f"{list(zip(list(range(y.shape[0])), attack_successful, y, linf_metric))}")
+        return attack_success_rate, linf_metric
+    return attack_success_rate
 
 
 def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=20, keep_best=True,
-                    validator=validation, l2_smoothing_loss=False, l2_smooth_loss_weight=1e-4, early_stopping=True,
+                    validator=validation, l2_smoothing_loss=False, l2_smooth_loss_weight=1e-4,
                     loss_fn_type='cw_f6'):
     """
     A method to combine global and local adversarial attacks
@@ -45,7 +45,6 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
     :param l2_smoothing_loss: If true applies the lsmooth loss from the paper https://arxiv.org/pdf/1801.02612.pdf
                               to both ReColor and SpatialFlowField attacks
     :param l2_smooth_loss_weight: weight for the l2_smooth_loss
-    :param early_stopping: if the loss doesn't improve stop the iterations
     :param loss_fn_type: the loss to use for adversarial optimization
     :return:
     """
@@ -54,16 +53,6 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
         raise RuntimeError('negative values found in pgd_linf function')
     
     num_examples = examples.shape[0]
-    best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
-                                          device=examples.device, requires_grad=False).copy_(examples)
-    best_loss_per_example = [float('inf') for _ in range(num_examples)]
-
-    # track k for GAIRAT https://openreview.net/pdf?id=iAX0l6Cz8ub
-    with torch.no_grad():
-        initial_predictions = torch.argmax(classifier(examples), dim=1)
-        gairat_k = torch.zeros(num_examples)
-        best_gairat_k = torch.zeros(num_examples)
-        
     if loss_fn_type == 'cw_f6':
         loss_fn = CWLossF6(classifier)
     elif loss_fn_type == "xent":
@@ -71,22 +60,17 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
     else:
         raise RuntimeError(f"{loss_fn_type} is not defined for pgd_attack_linf method")
 
-    if validator is not None:
-        validation = validator(classifier, examples, best_perturbed_examples, labels)
+    with torch.no_grad():
+        initial_predictions = torch.argmax(classifier(examples), dim=1)
+        validation = validator(classifier, examples, examples, labels)
         logger.info("initial attack-success-rate: %.3f", validation)
+        # initialize the best loss based on un-attacked model
+        loss_per_example = loss_fn(examples, labels)
+        best_loss_per_example = [float(loss) for loss in loss_per_example]
+        best_perturbed_examples = torch.empty(*examples.shape, dtype=examples.dtype,
+                                          device=examples.device, requires_grad=False).copy_(examples)
         
-    perturbed_examples = examples
-    previous_loss = torch.tensor(0.0)
-    
     for iter_no in range(num_iterations):
-        
-        # GAIRAT https://openreview.net/pdf?id=iAX0l6Cz8ub
-        with torch.no_grad():
-            current_predictions = torch.argmax(classifier(perturbed_examples), dim=1)
-            gairat_k[current_predictions == initial_predictions] += 1
-            
-        # unravel the sequential model and separate out linf from deformation methods
-        # apply linf based perturbations and clip the combined perturbation
         perturbed_examples = perturbation(examples)
         total_loss_per_example = loss_fn(perturbed_examples, labels)
 
@@ -129,26 +113,17 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
                     if cur_best_loss > float(el):
                         logger.debug(f"best loss for idx:{i} found in iter:{iter_no} = {float(el)}")
                         best_loss_per_example[i] = float(el)
-                        best_gairat_k[i] = gairat_k[i]
                         best_perturbed_examples[i].copy_(perturbed_examples[i].data)
-                log_msg += f"best_loss: {loss_fn(best_perturbed_examples, labels).sum().item():.4f} "
 
-            # If validation is provided do early stopping
-            if validator is not None:
-                validation = validator(classifier, examples, best_perturbed_examples, labels)
-                log_msg += f"attack_success_rate: {validation:.3f} %"
-
-            # early stopping
-            logger.info(log_msg)
-            if early_stopping and torch.allclose(total_loss_per_example.sum(), previous_loss):
-                logger.warning("loss didn't improve from previous iteration, stopping PGD optimization for the batch")
-                break
-
-            previous_loss = total_loss_per_example.sum()
+                attack_success_rate = (100 * (classifier(best_perturbed_examples).topk(1)[1] != labels.view(-1, 1)).sum() / num_examples).item()
+                log_msg += f"best_loss: {loss_fn(best_perturbed_examples, labels).sum().item():.4f} "\
+                           f"attack_success_rate:{attack_success_rate:.2f}"
+        
+        logger.info(log_msg)
 
     # clean up the accumulated gradients
     classifier.zero_grad()
     perturbation.zero_grad()
     if keep_best:
-        return best_perturbed_examples, best_gairat_k
-    return perturbed_examples.detach(), gairat_k
+        return best_perturbed_examples
+    return perturbed_examples.detach()
