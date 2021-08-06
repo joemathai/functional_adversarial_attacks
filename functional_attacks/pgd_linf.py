@@ -1,7 +1,7 @@
 import torch
 import logging
 
-from functional_attacks.attacks import AffineTransforms, RotationTranslationTransforms, SWIRColorTransforms, ColorTransforms, Delta, \
+from functional_attacks.attacks import AffineTransforms, RotationTranslationTransforms, IndependentChannelColorTransforms, SWIRColorTransforms, ColorTransforms, Delta, \
     SpatialFlowFields, ThinPlateSplines, ConvolutionalKernel, AdjustBrightnessContrast, \
     AdjustGamma, AdjustHueSaturation, AdjustSharpness, GaussianBlur
 from functional_attacks.loss import CWLossF6, l2_grid_smoothness, CrossEntropyLoss
@@ -99,7 +99,8 @@ def pgd_attack_linf(perturbation, classifier, examples, labels, num_iterations=2
             for module in perturbation.modules():
                 if type(module) in (AdjustBrightnessContrast, AdjustGamma, AdjustHueSaturation, AdjustSharpness,
                                     GaussianBlur, AffineTransforms, RotationTranslationTransforms,
-                                    Delta, SWIRColorTransforms, ColorTransforms, ConvolutionalKernel,
+                                    Delta, IndependentChannelColorTransforms, SWIRColorTransforms,
+                                    ColorTransforms, ConvolutionalKernel,
                                     SpatialFlowFields, ThinPlateSplines):
                     module.update_and_project_params()
                 else:

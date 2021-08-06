@@ -1,6 +1,57 @@
 import torch
 
 
+class IndependentChannelColorTransforms(torch.nn.Module):
+    """
+    Channel invariant non-linear color transform for SWIR or grayscale images
+    """
+    def __init__(self, batch_shape, resolution=72, step_size=1/255, linf_budget=10/255, random_init=False):
+        super().__init__()
+        self.resolution = resolution
+        self.step_size = step_size
+        self.linf_budget = linf_budget
+        self.register_buffer('identity_params', torch.empty(batch_shape[0], resolution, 3, dtype=torch.float32),
+                             persistent=False)
+        for x in range(resolution):
+            self.identity_params[:, x, :] = x / (resolution - 1)
+
+        if random_init:
+            random_delta = torch.empty(batch_shape[0], resolution, 3).uniform_(-self.linf_budget, self.linf_budget)
+            self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params) + random_delta)
+        else:
+            self.xform_params = torch.nn.Parameter(torch.empty_like(self.identity_params).copy_(self.identity_params))
+
+    def forward(self, imgs):
+        N, C, H, W = imgs.shape
+        imgs = imgs.permute(0, 2, 3, 1) # N, H, W, C
+        imgs_scaled = imgs * torch.tensor([self.resolution - 1] * C, dtype=torch.float32, device=self.xform_params.device)[None, None, None, :].expand(N, H, W, C)
+        integer_part, float_part = torch.floor(imgs_scaled).long(), imgs_scaled % 1
+        transformed_channels = list()
+        for ch in range(3):
+            endpoints = list()
+            for delta_x in [0, 1]:
+                color_index = torch.clamp(integer_part[:, :, :, ch] + delta_x, 0, self.resolution - 1).reshape(N, -1)
+                param_index = torch.gather(self.xform_params[:, :, ch], 1, color_index).view(N, H, W, 1)
+                endpoints.append(param_index)
+            transformed_channels.append(
+                torch.clamp(endpoints[0] * (1 - float_part[:, :, :, ch].unsqueeze(-1)) +
+                            endpoints[1] * float_part[:, :, :, ch].unsqueeze(-1), 0, 1).permute(0, 3, 1, 2)
+            )
+        return torch.clamp(torch.cat(transformed_channels, dim=1), 0, 1.0)
+
+    @torch.no_grad()
+    def update_and_project_params(self):
+        # update params
+        self.xform_params.sub_(torch.sign(self.xform_params.grad) * self.step_size)
+        # clip the parameters to be within pixel intensities [0, 1]
+        self.xform_params.copy_(torch.clamp(self.xform_params, min=0.0, max=1.0))
+        # based on linf budget clip the parameters and project
+        self.xform_params.copy_(
+            (self.xform_params - self.identity_params).clamp(min=-self.linf_budget, max=self.linf_budget) +
+            self.identity_params
+        )
+
+
 class SWIRColorTransforms(torch.nn.Module):
     """
     Channel invariant non-linear color transform for SWIR or grayscale images
@@ -53,8 +104,8 @@ class ColorTransforms(torch.nn.Module):
     RGB -> CIELUV color space is not yet implemented
     """
 
-    def __init__(self, batch_shape, resolution_x=64, resolution_y=64, resolution_z=64,
-                 step_size=0.003, linf_budget=0.1, random_init=False):
+    def __init__(self, batch_shape, resolution_x=72, resolution_y=72, resolution_z=72,
+                 step_size=1/255, linf_budget=10/255, random_init=False):
         super().__init__()
         self.resolution_x = resolution_x
         self.resolution_y = resolution_y
@@ -136,4 +187,5 @@ class ColorTransforms(torch.nn.Module):
             (self.xform_params - self.identity_params).clamp(min=-self.linf_budget, max=self.linf_budget) +
             self.identity_params
         )
+
 
