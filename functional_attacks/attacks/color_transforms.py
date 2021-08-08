@@ -1,4 +1,5 @@
 import torch
+import numpy as np
 
 
 class IndependentChannelColorTransforms(torch.nn.Module):
@@ -101,7 +102,6 @@ class ColorTransforms(torch.nn.Module):
     """
     An implementation of functional adversarial attack https://papers.nips.cc/paper/2019/file/6e923226e43cd6fac7cfe1e13ad000ac-Paper.pdf
     The code is taken from https://github.com/cassidylaidlaw/ReColorAdv
-    RGB -> CIELUV color space is not yet implemented
     """
 
     def __init__(self, batch_shape, resolution_x=72, resolution_y=72, resolution_z=72,
@@ -189,3 +189,136 @@ class ColorTransforms(torch.nn.Module):
         )
 
 
+class ColorTransformsCIELUV(torch.nn.Module):
+
+    class CIEXYZColorSpace:
+        """
+        The 1931 CIE XYZ color space (assuming input is in sRGB).
+        
+        Warning: may have values outside [0, 1] range. Should only be used in
+        the process of converting to/from other color spaces.
+        """
+
+        def from_rgb(self, imgs):
+            # apply gamma correction
+            small_values_mask = (imgs < 0.04045).float()
+            imgs_corrected = (
+                (imgs / 12.92) * small_values_mask +
+                ((imgs + 0.055) / 1.055) ** 2.4 * (1 - small_values_mask)
+            )
+            # linear transformation to XYZ
+            r, g, b = imgs_corrected.permute(1, 0, 2, 3)
+            x = 0.4124 * r + 0.3576 * g + 0.1805 * b
+            y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+            z = 0.0193 * r + 0.1192 * g + 0.9504 * b
+            return torch.stack([x, y, z], 1)
+
+        def to_rgb(self, imgs):
+            # linear transformation
+            x, y, z = imgs.permute(1, 0, 2, 3)
+            r = 3.2406 * x - 1.5372 * y - 0.4986 * z
+            g = -0.9689 * x + 1.8758 * y + 0.0415 * z
+            b = 0.0557 * x - 0.2040 * y + 1.0570 * z
+            imgs = torch.stack([r, g, b], 1)
+            # apply gamma correction
+            small_values_mask = (imgs < 0.0031308).float()
+            imgs_clamped = imgs.clamp(min=1e-10)  # prevent NaN gradients
+            imgs_corrected = (
+                (12.92 * imgs) * small_values_mask +
+                (1.055 * imgs_clamped ** (1 / 2.4) - 0.055) *
+                (1 - small_values_mask)
+            )
+            return imgs_corrected
+
+
+    class CIELUVColorSpace:
+        """
+        Converts to the 1976 CIE L*u*v* color space.
+        """
+        def __init__(self, up_white=0.1978, vp_white=0.4683, y_white=1,
+                     eps=1e-10):
+            self.xyz_cspace = ColorTransformsCIELUV.CIEXYZColorSpace()
+            self.up_white = up_white
+            self.vp_white = vp_white
+            self.y_white = y_white
+            self.eps = eps
+
+        def from_rgb(self, imgs):
+            x, y, z = self.xyz_cspace.from_rgb(imgs).permute(1, 0, 2, 3)
+            # calculate u' and v'
+            denom = x + 15 * y + 3 * z + self.eps
+            up = 4 * x / denom
+            vp = 9 * y / denom
+            # calculate L*, u*, and v*
+            small_values_mask = (y / self.y_white < (6 / 29) ** 3).float()
+            y_clamped = y.clamp(min=self.eps)  # prevent NaN gradients
+            L = (
+                ((29 / 3) ** 3 * y / self.y_white) * small_values_mask +
+                (116 * (y_clamped / self.y_white) ** (1 / 3) - 16) *
+                (1 - small_values_mask)
+            )
+            u = 13 * L * (up - self.up_white)
+            v = 13 * L * (vp - self.vp_white)
+            return torch.stack([L / 100, (u + 100) / 200, (v + 100) / 200], 1)
+
+        def to_rgb(self, imgs):
+            L = imgs[:, 0, :, :] * 100
+            u = imgs[:, 1, :, :] * 200 - 100
+            v = imgs[:, 2, :, :] * 200 - 100
+            up = u / (13 * L + self.eps) + self.up_white
+            vp = v / (13 * L + self.eps) + self.vp_white
+            small_values_mask = (L <= 8).float()
+            y = (
+                (self.y_white * L * (3 / 29) ** 3) * small_values_mask +
+                (self.y_white * ((L + 16) / 116) ** 3) * (1 - small_values_mask)
+            )
+            denom = 4 * vp + self.eps
+            x = y * 9 * up / denom
+            z = y * (12 - 3 * up - 20 * vp) / denom
+            return self.xyz_cspace.to_rgb(
+                torch.stack([x, y, z], 1).clamp(0, 1.1)).clamp(0, 1)
+        
+    def __init__(self, batch_shape, resolution_x=64, resolution_y=32, resolution_z=32,
+                 step_size=1/255, linf_budget=10/255, random_init=False):
+        super().__init__()
+        self.luv_color_space = self.CIELUVColorSpace()
+        self.adversary = ColorTransforms(batch_shape, resolution_x, resolution_y, resolution_z, random_init=random_init)
+
+    def forward(self, imgs):
+        return torch.clamp(self.luv_color_space.to_rgb(self.adversary(self.luv_color_space.from_rgb(imgs))), 0.0, 1.0)
+
+
+class ColorTransformsHSV(torch.nn.Module):
+    
+    class ApproxHSVColorSpace:
+        """
+        Converts from RGB to approximately the HSV cone using a much smoother
+        transformation.
+        """
+        def from_rgb(self, imgs):
+            r, g, b = imgs.permute(1, 0, 2, 3)
+            x = r * np.sqrt(2) / 3 - g / (np.sqrt(2) * 3) - b / (np.sqrt(2) * 3)
+            y = g / np.sqrt(6) - b / np.sqrt(6)
+            z, _ = imgs.max(1)
+            return torch.stack([z, x + 0.5, y + 0.5], 1)
+
+        def to_rgb(self, imgs):
+            z, xp, yp = imgs.permute(1, 0, 2, 3)
+            x, y = xp - 0.5, yp - 0.5
+            rp = float(np.sqrt(2)) * x
+            gp = -x / np.sqrt(2) + y * np.sqrt(3 / 2)
+            bp = -x / np.sqrt(2) - y * np.sqrt(3 / 2)
+            delta = z - torch.max(torch.stack([rp, gp, bp], 1), 1)[0]
+            r, g, b = rp + delta, gp + delta, bp + delta
+            return torch.stack([r, g, b], 1).clamp(0, 1)
+    
+    def __init__(self, batch_shape, resolution=72, step_size=1/255, linf_budget=6/255, random_init=False):
+        super().__init__()
+        self.hsv_color_space = self.ApproxHSVColorSpace()
+        self.adversary = IndependentChannelColorTransforms(batch_shape, resolution, step_size=step_size,
+                                                           linf_budget=linf_budget, random_init=random_init)
+
+    def forward(self, imgs):
+        return torch.clamp(self.hsv_color_space.to_rgb(self.adversary(self.hsv_color_space.from_rgb(imgs))), 0.0, 1.0)
+        
+        
